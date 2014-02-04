@@ -1,0 +1,184 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "Launch an EC2 Operator to perform auto-start and auto-stop instances in the same region.",
+  
+
+  "Parameters" : {
+  
+	"InstanceType" : {
+      "Description" : "Instance type for the EC2 Operator",
+      "Type" : "String",
+      "Default" : "t1.micro",
+      "AllowedValues" : [ "t1.micro","m1.small","m1.medium"],
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+	
+	"KeyName" : {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instance",
+      "Type" : "String",
+	  "Default" : "schen"
+    },
+
+	"AdminCidrIp" : {
+      "Type" : "String",
+      "Description" : "Source cidr block for SSH access",
+	  "Default" : "0.0.0.0/0"		  
+    }	
+  },
+  
+  "Mappings" : {
+  
+    "RegionMap" : {
+      "us-east-1"      : { "AMI" : "ami-bba18dd2" },
+      "us-west-1"      : { "AMI" : "ami-a43909e1" },	  
+      "us-west-2"      : { "AMI" : "ami-ccf297fc" },
+      "eu-west-1"      : { "AMI" : "ami-5256b825" },
+      "sa-east-1"      : { "AMI" : "ami-c99130d4" },
+      "ap-southeast-1" : { "AMI" : "ami-b4baeee6" },
+      "ap-southeast-2" : { "AMI" : "ami-5ba83761" },
+      "ap-northeast-1" : { "AMI" : "ami-0d13700c" }
+    }
+	
+  },
+  
+  "Resources" : {
+  
+     "SecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {	  
+        "GroupDescription" : "EC2 Operator Admin Access",
+        "SecurityGroupIngress" : [ 
+         {"IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : { "Ref" : "AdminCidrIp"} }		 
+        ]
+      }
+    },
+
+	"OperatorInstance" : {
+      "Type" : "AWS::EC2::Instance",
+      "Metadata" : {
+		"AWS::CloudFormation::Init" : {
+		  "config" : {
+			"packages" : {
+		      "yum" : {
+			    "python-pip" : [],
+				"gcc"        : []
+		      }
+			}
+		  }
+		}
+	  },	  
+      "Properties"     : {
+        "ImageId"      : { "Fn::FindInMap" : [ "RegionMap", { "Ref" : "AWS::Region" }, "AMI" ]},
+        "InstanceType" : { "Ref" : "InstanceType" },
+        "IamInstanceProfile": {
+          "Ref": "OperatorInstanceProfile"
+        }, 		
+        "KeyName"      : { "Ref" : "KeyName" },
+        "SecurityGroups" : [{ "Ref" : "SecurityGroup" }],		
+		"UserData"     : { "Fn::Base64" : { "Fn::Join" : ["", [
+		  "#!/bin/bash -v\n",
+          "yum update -y aws-cfn-bootstrap\n",
+		  
+		  "# Helper function\n",
+          "function error_exit\n",
+          "{\n",
+          "  /opt/aws/bin/cfn-signal -e 1 -r \"$1\" '", { "Ref" : "WaitHandle" }, "'\n",
+          "  exit 1\n",
+          "}\n",
+
+          "# Interpret metadata\n",
+          "/opt/aws/bin/cfn-init -s ", { "Ref" : "AWS::StackId" }, " -r OperatorInstance ",
+		  "    --region ", { "Ref" : "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+		  
+		  "# Set up ec2 operator\n",
+		  "pip install croniter\n",
+		  "OPERATOR=/home/ec2-user/ec2_operator.py\n",
+		  "wget -O $OPERATOR https://raw2.github.com/schen1628/EC2/master/ec2_operator.py\n",
+		  "sed -i 's/us-east-1/", { "Ref" : "AWS::Region" }, "/i' $OPERATOR\n",
+		  "chown ec2-user:ec2-user $OPERATOR\n",
+		  "chmod 644 $OPERATOR\n",
+		  "echo \"*/5 * * * * ec2-user python $OPERATOR \" >> /etc/crontab\n",
+
+          "# If all is well so signal success\n",
+          "/opt/aws/bin/cfn-signal -e $? -r \"EC2 Operator setup complete\" '", { "Ref" : "WaitHandle" }, "'\n"
+		 ]]}}
+	  }
+    },
+
+    "WaitHandle" : {
+      "Type" : "AWS::CloudFormation::WaitConditionHandle"
+    },
+
+    "WaitCondition" : {
+      "Type" : "AWS::CloudFormation::WaitCondition",
+      "DependsOn" : "OperatorInstance",
+      "Properties" : {
+        "Handle" : {"Ref" : "WaitHandle"},
+        "Timeout" : "300"
+      }
+    },    
+	
+    "OperatorInstanceProfile" : {
+      "Properties": {
+        "Path": "/", 
+        "Roles": [
+          {
+            "Ref": "OperatorRole"
+          }
+        ]
+      }, 
+      "Type": "AWS::IAM::InstanceProfile"
+    }, 	
+	
+    "OperatorRole": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole"
+              ], 
+              "Effect": "Allow", 
+              "Principal": {
+                "Service": [
+                  "ec2.amazonaws.com"
+                ]
+              }
+            }
+          ]
+        }, 
+        "Path": "/", 
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+				    "ec2:DescribeInstances",
+                    "ec2:StartInstances",
+                    "ec2:StopInstances"
+				  ], 
+                  "Effect": "Allow", 
+                  "Resource": "*"
+                }
+              ]
+            }, 
+            "PolicyName": "EC2OperatorPolicy"
+          }
+        ]
+      }, 
+      "Type": "AWS::IAM::Role"
+    }	
+  },
+
+  "Outputs" : {
+  
+    "OperatorInstanceId" : {
+      "Value" : { "Ref" : "OperatorInstance" },
+      "Description" : "Instance Id of the ec2 operator instance"
+    }
+	
+  }
+  
+}
