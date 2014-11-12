@@ -94,7 +94,7 @@
 		  "# Set up ec2 operator\n",
 		  "pip install croniter\n",
 		  "OPERATOR=/home/ec2-user/ec2_operator.py\n",
-		  "wget -O $OPERATOR https://raw2.github.com/schen1628/EC2/master/ec2_operator.py\n",
+		  "wget -O $OPERATOR https://raw.githubusercontent.com/schen1628/ec2/master/ec2_operator.py\n",
 		  "sed -i 's/us-east-1/", { "Ref" : "AWS::Region" }, "/i' $OPERATOR\n",
 		  "chown ec2-user:ec2-user $OPERATOR\n",
 		  "chmod 644 $OPERATOR\n",
